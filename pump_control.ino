@@ -13,8 +13,9 @@
 
 
 // Load Cell Library
-#include "HX711.h"
+#include <HX711.h>
 
+/***** PROTOTYPE PINS
 // Load cell pin definitions
 #define LOADCELL_DOUT_PIN  3
 #define LOADCELL_SCK_PIN  2
@@ -27,6 +28,21 @@
 
 // Pause Button Pin
 #define PAUSE_SWITCH_PIN 8
+*/
+
+/***** PERMANENT PINS */
+// Load cell pin definitions
+#define LOADCELL_DOUT_PIN  12
+#define LOADCELL_SCK_PIN  11
+
+// Base pin definition for TIP120 transistor (controls pump on/off)
+#define TRANS_BASE_PIN 3
+
+// Rotation Speed Pin (controls pump rotation speed)
+#define ROTATION_SPEED_PIN 4
+
+// Pause Button Pin
+#define PAUSE_SWITCH_PIN 2
 
 
 // Variables used for load cell calibration
@@ -37,9 +53,7 @@ float target_mass;
 float current_mass;
 int sample_size = 5;
 
-float diff_sum = 0;
-int diff_count = 0;
-float diff_average = 0;
+float fill_diff = 0;
 
 // Variables controlling pump rotation speed
 int rotation_speed = 0;
@@ -69,47 +83,62 @@ void setup() {
 
 void loop()
 {
+//  Serial.println(calculate_mass(scale.read()));
+//  delay(1000);
+//  return;
+  
   checkPause();
   
   current_mass = calculate_mass(scale.read());
+  Serial.print("Current weight: ");
+  Serial.println(current_mass);
 
-  if (current_mass >= target_mass - diff_average) {
+  if (current_mass >= target_mass - fill_diff) {
     togglePump(false);
     
     printCurrentWeight(current_mass);
 
-    delay(500);
+    delay(1000);
     
-    diff_sum += calculate_mass(getReading(0)) - target_mass;
-    diff_count++;
-    diff_average = diff_sum / diff_count;
-    Serial.println(diff_average);
+    fill_diff += calculate_mass(getReading(0)) - target_mass;
+    if (fill_diff > 0.5 || fill_diff < -0.5) {
+      fill_diff = 0;
+    }
+    Serial.println(fill_diff);
     
     digitalWrite(LED_BUILTIN, HIGH);
     while (true) {
       checkPause();
       
       printCurrentWeight(calculate_mass(getReading(0)));
+      delay(100);
       
-      if (calculate_mass(getReading(0)) < target_mass - 1) {
+      current_mass = calculate_mass(getReading(0));
+      if (current_mass < target_mass * 0.85) {
         digitalWrite(LED_BUILTIN, LOW);
 
         Serial.println();
         Serial.println("Starting pump...");
         printCoundown(3);
-        togglePump(true);
         
-        break;
+        current_mass = calculate_mass(getReading(0));
+        
+        printCurrentWeight(current_mass);
+        printCurrentWeight(target_mass * 0.2);
+        
+        if (current_mass > target_mass * 0.2) {
+          togglePump(true);
+          return;
+        }
       }
-      
-      delay(100);
     }
   }
 
   // Slow down the pump speed if we are approaching the target weight
   if (!slow_zone && current_mass > target_mass * 0.95) {
+    Serial.println("Entering Slow Zone");
     slow_zone = true;
-    analogWrite(ROTATION_SPEED_PIN, 65);
+    analogWrite(ROTATION_SPEED_PIN, 155);
   }
 }
 
@@ -210,6 +239,7 @@ float calculate_mass(long reading)
 
 void checkPause()
 {
+  return;
   if (digitalRead(PAUSE_SWITCH_PIN) == HIGH) {
     Serial.println("Paused");
     while(true) {
@@ -224,10 +254,16 @@ void checkPause()
 void printCoundown(int seconds)
 {
   for (int i = seconds; i > 0; i--) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(50);
+    if (i > 1) {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
     Serial.print(i);
     Serial.print("..");
-    delay(1000);
+    delay(950);
   }
+  digitalWrite(LED_BUILTIN, LOW);
   
   Serial.println();
   Serial.println();
