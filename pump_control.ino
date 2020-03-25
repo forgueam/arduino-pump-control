@@ -38,8 +38,11 @@
 // Base pin definition for TIP120 transistor (controls pump on/off)
 #define TRANS_BASE_PIN 3
 
-// Rotation Speed Pin (controls pump rotation speed)
-#define ROTATION_SPEED_PIN 4
+// Rotation Speed Output Pin (controls pump rotation speed)
+#define ROTATION_SPEED_PIN 5
+
+// Rotation Speed Potentiometer Pin
+#define ROTATION_SPEED_POT_PIN A5
 
 // Pause Button Pin
 #define PAUSE_SWITCH_PIN 2
@@ -57,6 +60,7 @@ float fill_diff = 0;
 
 // Variables controlling pump rotation speed
 int rotation_speed = 0;
+int rotation_speed_pot_val = 0;
 bool slow_zone = false;
 
 // Variables controlling running/paused state
@@ -72,6 +76,7 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);       // LED pin
   pinMode(TRANS_BASE_PIN, OUTPUT);           // Transistor base pin
   pinMode(ROTATION_SPEED_PIN, OUTPUT);  // Rotation speed pin
+  pinMode(ROTATION_SPEED_POT_PIN, INPUT);  // Rotation speed potentiometer pin
   pinMode(PAUSE_SWITCH_PIN, INPUT);     // Pause button pin
 
   // Initialize Scale
@@ -82,16 +87,25 @@ void setup() {
 }
 
 void loop()
-{
-//  Serial.println(calculate_mass(scale.read()));
-//  delay(1000);
-//  return;
-  
-  checkPause();
-  
+{  
   current_mass = calculate_mass(scale.read());
   Serial.print("Current weight: ");
   Serial.println(current_mass);
+
+  // Slow down the pump speed if we are approaching the target weight
+  if (!slow_zone && current_mass > target_mass * 0.95) {
+    Serial.println("Entering Slow Zone");
+    slow_zone = true;
+  }
+  
+  // Slow down the pump speed if we are approaching the target weight
+  if (slow_zone) {
+    analogWrite(ROTATION_SPEED_PIN, rotation_speed_pot_val * 0.33);
+  } else {
+    //rotation_speed_pot_val = analogRead(ROTATION_SPEED_POT_PIN);
+    rotation_speed_pot_val = rpm_analog_val(600);
+    analogWrite(ROTATION_SPEED_PIN, rotation_speed_pot_val);
+  }
 
   if (current_mass >= target_mass - fill_diff) {
     togglePump(false);
@@ -101,15 +115,13 @@ void loop()
     delay(1000);
     
     fill_diff += calculate_mass(getReading(0)) - target_mass;
-    if (fill_diff > 0.5 || fill_diff < -0.5) {
+    if (fill_diff > 0.1 || fill_diff < -0.1) {
       fill_diff = 0;
     }
     Serial.println(fill_diff);
     
     digitalWrite(LED_BUILTIN, HIGH);
     while (true) {
-      checkPause();
-      
       printCurrentWeight(calculate_mass(getReading(0)));
       delay(100);
       
@@ -133,13 +145,6 @@ void loop()
       }
     }
   }
-
-  // Slow down the pump speed if we are approaching the target weight
-  if (!slow_zone && current_mass > target_mass * 0.95) {
-    Serial.println("Entering Slow Zone");
-    slow_zone = true;
-    analogWrite(ROTATION_SPEED_PIN, 155);
-  }
 }
 
 void togglePump(bool on)
@@ -147,7 +152,7 @@ void togglePump(bool on)
   if (on) {
     Serial.println("Toggling Pump On");
     digitalWrite(TRANS_BASE_PIN, 255);
-    analogWrite(ROTATION_SPEED_PIN, 255);
+//    analogWrite(ROTATION_SPEED_PIN, 255);
     slow_zone = false;
   } else {
     Serial.println("Toggling Pump Off");
@@ -235,6 +240,11 @@ float calculate_mass(long reading)
   float mass = y1 * ratio;
 
   return mass;
+}
+
+int rpm_analog_val(int rpm)
+{
+  return rpm * 0.425;
 }
 
 void checkPause()
