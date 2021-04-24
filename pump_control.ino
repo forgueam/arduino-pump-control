@@ -52,19 +52,24 @@
 float y1 = 20.353;
 long x0 = -70348;
 long x1 = -336373;
+float empty_mass;
 float target_mass;
 float current_mass;
 int sample_size = 5;
 
 float fill_diff = 0;
 
-// Variables controlling pump rotation speed
-int rotation_speed = 0;
-int rotation_speed_pot_val = 0;
-bool slow_zone = false;
-
-// Variables controlling running/paused state
 int paused = 0;
+bool slow_zone = false;
+float slow_zone_target;
+int rotation_speed_pot_val = 0;
+
+// Variables controlling pump rotation speed
+int rotation_speed = 600;
+float restart_pause_time = 2;
+float slow_zone_threshold = 0.95;
+float slow_zone_speed_percentage = 0.3;
+int delay_before_diff_calc = 250;
 
 HX711 scale;
 
@@ -84,35 +89,33 @@ void setup() {
 
   // Read the target mass
   setTargetMass();
+
+  slow_zone_target = target_mass - (abs(target_mass) * (1 - slow_zone_threshold));
 }
 
 void loop()
-{  
+{
   current_mass = calculate_mass(scale.read());
   Serial.print("Current weight: ");
-  Serial.println(current_mass);
-
-  // Slow down the pump speed if we are approaching the target weight
-  if (!slow_zone && current_mass > target_mass * 0.95) {
-    Serial.println("Entering Slow Zone");
-    slow_zone = true;
-  }
+  Serial.print(current_mass);
   
   // Slow down the pump speed if we are approaching the target weight
-  if (slow_zone) {
-    analogWrite(ROTATION_SPEED_PIN, rotation_speed_pot_val * 0.33);
+  if (current_mass > slow_zone_target) {
+    rotation_speed_pot_val = rpm_analog_val(rotation_speed) * slow_zone_speed_percentage;
+    Serial.println(" ... In Slow Zone");
   } else {
     //rotation_speed_pot_val = analogRead(ROTATION_SPEED_POT_PIN);
-    rotation_speed_pot_val = rpm_analog_val(600);
-    analogWrite(ROTATION_SPEED_PIN, rotation_speed_pot_val);
+    rotation_speed_pot_val = rpm_analog_val(rotation_speed);
+    Serial.println(" ... Normal Speed");
   }
+  analogWrite(ROTATION_SPEED_PIN, rotation_speed_pot_val);
 
   if (current_mass >= target_mass - fill_diff) {
     togglePump(false);
     
     printCurrentWeight(current_mass);
 
-    delay(1000);
+    delay(delay_before_diff_calc);
     
     fill_diff += calculate_mass(getReading(0)) - target_mass;
     if (fill_diff > 0.1 || fill_diff < -0.1) {
@@ -122,26 +125,25 @@ void loop()
     
     digitalWrite(LED_BUILTIN, HIGH);
     while (true) {
-      printCurrentWeight(calculate_mass(getReading(0)));
+      current_mass = calculate_mass(getReading(0));
+      printCurrentWeight(current_mass);
       delay(100);
       
-      current_mass = calculate_mass(getReading(0));
-      if (current_mass < target_mass * 0.85) {
+      if (current_mass < target_mass - (abs(target_mass) * 0.01)) {
         digitalWrite(LED_BUILTIN, LOW);
 
         Serial.println();
         Serial.println("Starting pump...");
-        printCoundown(3);
-        
-        current_mass = calculate_mass(getReading(0));
-        
-        printCurrentWeight(current_mass);
-        printCurrentWeight(target_mass * 0.2);
-        
-        if (current_mass > target_mass * 0.2) {
-          togglePump(true);
-          return;
-        }
+        printCoundown(restart_pause_time);
+        togglePump(true);
+        return;
+
+        // One last check to make sure a container is on the scale before filling is started
+//        current_mass = calculate_mass(getReading(0));
+//        if (current_mass > target_mass - (abs(target_mass) * 0.8)) {
+//          togglePump(true);
+//          return;
+//        }
       }
     }
   }
@@ -152,7 +154,6 @@ void togglePump(bool on)
   if (on) {
     Serial.println("Toggling Pump On");
     digitalWrite(TRANS_BASE_PIN, 255);
-//    analogWrite(ROTATION_SPEED_PIN, 255);
     slow_zone = false;
   } else {
     Serial.println("Toggling Pump Off");
@@ -173,41 +174,10 @@ void printCurrentWeight(float current_weight)
   Serial.println();
 }
 
-void calibrate()
-{
-  /*
-  Serial.println("Remove all mass");
-  printCoundown(5);
-  Serial.println("Reading Average");
-  x0 = getReading(10);
-  blink(2);
-  Serial.println(x0);
-  
-  Serial.println("Add Calibration Mass");
-  printCoundown(5);
-  Serial.println("Reading Average");
-  x1 = getReading(10);
-  blink(2);
-  Serial.println(x1);
-  */
-  
-  Serial.println("Add Target Mass");
-  printCoundown(7);
-  Serial.println("Reading Average");
-  target_mass = calculate_mass(getReading(10));
-  blink(2);
-  Serial.println();
-
-//  target_mass = 10.36;
-  
-  Serial.print("Calibration Complete. Target weight: ");
-  Serial.println(target_mass);
-}
-
 void setTargetMass()
 {
   Serial.println("Add Target Mass");
-  printCoundown(7);
+  printCoundown(5);
   Serial.println("Reading Average");
   target_mass = calculate_mass(getReading(10));
   blink(2);
