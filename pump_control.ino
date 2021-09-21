@@ -1,123 +1,112 @@
-/***
- * TODO
- * - On/Off power switch
- * - Fine tuning up/down switch
- * - Pause switch (so we can take something off the scale without triggering next fill
- * 
- * x0: -70095, -70348
- * x1: -336112, -336373
- * 
-  x0 = -70348;
-  x1 = -336373;
- */
-
-
 // Load Cell Library
 #include <HX711.h>
 
-/***** PROTOTYPE PINS
 // Load cell pin definitions
-#define LOADCELL_DOUT_PIN  3
-#define LOADCELL_SCK_PIN  2
+#define LOADCELL_DAT_PIN  A5 // 12
+#define LOADCELL_CLK_PIN  A4
 
-// Base pin definition for TIP120 transistor (controls pump on/off)
-#define TRANS_BASE_PIN 11
-
-// Rotation Speed Pin (controls pump rotation speed)
-#define ROTATION_SPEED_PIN 5
-
-// Pause Button Pin
-#define PAUSE_SWITCH_PIN 8
-*/
-
-/***** PERMANENT PINS */
-// Load cell pin definitions
-#define LOADCELL_DOUT_PIN  12
-#define LOADCELL_SCK_PIN  11
-
-// Base pin definition for TIP120 transistor (controls pump on/off)
+// Base pin definition for the transistor (controls pump on/off)
 #define TRANS_BASE_PIN 3
 
 // Rotation Speed Output Pin (controls pump rotation speed)
 #define ROTATION_SPEED_PIN 5
 
-// Rotation Speed Potentiometer Pin
-#define ROTATION_SPEED_POT_PIN A5
+#define SENSOR_ECHO_PIN A2 // 9 // Pin to receive echo pulse
+#define SENSOR_TRIG_PIN A3 // 8 // Pin to send trigger pulse
 
-// Pause Button Pin
-#define PAUSE_SWITCH_PIN 2
+#define TARGET_UP_BUTTON_PIN 6
+#define TARGET_DOWN_BUTTON_PIN 7
+#define TARGET_LED_PIN 8
 
+String command;
 
 // Variables used for load cell calibration
-float y1 = 20.353;
-long x0 = -70348;
-long x1 = -336373;
-float empty_mass;
-float target_mass;
-float current_mass;
+float calibration_factor = 436.8;
+float target_weight;
+float current_weight;
 int sample_size = 5;
 
 float fill_diff = 0;
 
-int paused = 0;
 bool slow_zone = false;
 float slow_zone_target;
-int rotation_speed_pot_val = 0;
 
 // Variables controlling pump rotation speed
-int rotation_speed = 600;
-float restart_pause_time = 2;
+int top_rotation_speed = 600;
+float restart_pause_time = 1000;
 float slow_zone_threshold = 0.95;
 float slow_zone_speed_percentage = 0.3;
 int delay_before_diff_calc = 250;
+
+int target_up_button_val;
+int target_down_button_val;
 
 HX711 scale;
 
 void setup() {
 
   // Activate Serial output
-  Serial.begin(9600);
+  Serial.setTimeout(1);
+  Serial.begin(115200);
+  Serial.flush();
+
+  // Define GPIO pin modes
+  pinMode(LED_BUILTIN, OUTPUT); // LED pin
+  pinMode(TRANS_BASE_PIN, OUTPUT); // Transistor base pin
+  pinMode(ROTATION_SPEED_PIN, OUTPUT); // Rotation speed pin
+  pinMode(SENSOR_ECHO_PIN, INPUT);
+  pinMode(SENSOR_TRIG_PIN, OUTPUT);
+  pinMode(TARGET_UP_BUTTON_PIN, INPUT);
+  pinMode(TARGET_DOWN_BUTTON_PIN, INPUT);
+  pinMode(TARGET_LED_PIN, OUTPUT);
+
+  // Initialize & Calibrate Scale
+  scale.begin(LOADCELL_DAT_PIN, LOADCELL_CLK_PIN);
+  scale.set_scale(436.8);
+  scale.tare();
   
-  pinMode(LED_BUILTIN, OUTPUT);       // LED pin
-  pinMode(TRANS_BASE_PIN, OUTPUT);           // Transistor base pin
-  pinMode(ROTATION_SPEED_PIN, OUTPUT);  // Rotation speed pin
-  pinMode(ROTATION_SPEED_POT_PIN, INPUT);  // Rotation speed potentiometer pin
-  pinMode(PAUSE_SWITCH_PIN, INPUT);     // Pause button pin
+  // Read the target weight
+  setTargetWeight();
 
-  // Initialize Scale
-  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
-
-  // Read the target mass
-  setTargetMass();
-
-  slow_zone_target = target_mass - (abs(target_mass) * (1 - slow_zone_threshold));
+  slow_zone_target = target_weight - (abs(target_weight) * (1 - slow_zone_threshold));
 }
 
 void loop()
 {
-  current_mass = calculate_mass(scale.read());
-  Serial.print("Current weight: ");
-  Serial.print(current_mass);
+//  if (Serial.available() > 0) {
+//    command = Serial.readStringUntil("\n");
+//    Serial.print("Received. ");
+//    
+//    target_weight += 1;
+//  
+//    Serial.print("Target Weight: ");
+//    Serial.println(target_weight);
+//  }
+  
+//  return;
+  
+  current_weight = scale.get_units(10);
+  printCurrentWeight(current_weight);
   
   // Slow down the pump speed if we are approaching the target weight
-  if (current_mass > slow_zone_target) {
-    rotation_speed_pot_val = rpm_analog_val(rotation_speed) * slow_zone_speed_percentage;
-    Serial.println(" ... In Slow Zone");
+  int rotation_speed;
+  if (current_weight > slow_zone_target) {
+    rotation_speed = rpm_analog_val(top_rotation_speed) * slow_zone_speed_percentage;
+    Serial.print("Slow Zone ... ");
+    Serial.println(rotation_speed);
   } else {
-    //rotation_speed_pot_val = analogRead(ROTATION_SPEED_POT_PIN);
-    rotation_speed_pot_val = rpm_analog_val(rotation_speed);
-    Serial.println(" ... Normal Speed");
+    rotation_speed = rpm_analog_val(top_rotation_speed);
+    Serial.print("Normal Speed ... ");
+    Serial.println(rotation_speed);
   }
-  analogWrite(ROTATION_SPEED_PIN, rotation_speed_pot_val);
+  analogWrite(ROTATION_SPEED_PIN, rotation_speed);
 
-  if (current_mass >= target_mass - fill_diff) {
+  if (!bottlePresent() || current_weight >= (target_weight - fill_diff)) {
     togglePump(false);
-    
-    printCurrentWeight(current_mass);
 
     delay(delay_before_diff_calc);
     
-    fill_diff += calculate_mass(getReading(0)) - target_mass;
+    fill_diff += scale.get_units(10) - target_weight;
     if (fill_diff > 0.1 || fill_diff < -0.1) {
       fill_diff = 0;
     }
@@ -125,16 +114,39 @@ void loop()
     
     digitalWrite(LED_BUILTIN, HIGH);
     while (true) {
-      current_mass = calculate_mass(getReading(0));
-      printCurrentWeight(current_mass);
+      
+      target_up_button_val = digitalRead(TARGET_UP_BUTTON_PIN);  // read input value
+      if (target_up_button_val == HIGH) {
+        digitalWrite(TARGET_LED_PIN, HIGH);
+        Serial.println("Increase target");
+        target_weight += (0.1 / 0.03527396);
+        do {
+          target_up_button_val = digitalRead(TARGET_UP_BUTTON_PIN);  // read input value
+        } while (target_up_button_val == HIGH);
+      }
+      
+      target_down_button_val = digitalRead(TARGET_DOWN_BUTTON_PIN);  // read input value
+      if (target_down_button_val == HIGH) {
+        digitalWrite(TARGET_LED_PIN, HIGH);
+        Serial.println("Decrease target");
+        target_weight -= (0.1 / 0.03527396);
+        do {
+          target_down_button_val = digitalRead(TARGET_DOWN_BUTTON_PIN);  // read input value
+        } while (target_down_button_val == HIGH);
+      }
+      
+      digitalWrite(TARGET_LED_PIN, LOW);
+      
+      current_weight = scale.get_units(10);
+      printCurrentWeight(current_weight);
       delay(100);
       
-      if (current_mass < target_mass - (abs(target_mass) * 0.01)) {
+      if (bottlePresent() && current_weight < (target_weight - (abs(target_weight) * 0.01))) {
         digitalWrite(LED_BUILTIN, LOW);
 
         Serial.println();
         Serial.println("Starting pump...");
-        printCoundown(restart_pause_time);
+        delay(restart_pause_time);
         togglePump(true);
         return;
 
@@ -153,100 +165,67 @@ void togglePump(bool on)
 {
   if (on) {
     Serial.println("Toggling Pump On");
-    digitalWrite(TRANS_BASE_PIN, 255);
+    digitalWrite(TRANS_BASE_PIN, HIGH);
     slow_zone = false;
   } else {
     Serial.println("Toggling Pump Off");
-    digitalWrite(TRANS_BASE_PIN, 0);
+    digitalWrite(TRANS_BASE_PIN, LOW);
   }
 }
 
 void printCurrentWeight(float current_weight)
 {
   Serial.print("Current weight: ~");
-  Serial.print(current_weight);
+  Serial.print(current_weight * 0.03527396);
   Serial.print(" oz");
   
   Serial.print("; Target weight: ~");
-  Serial.print(target_mass);
+  Serial.print(target_weight * 0.03527396);
   Serial.print(" oz");
   
   Serial.println();
 }
 
-void setTargetMass()
+void setTargetWeight()
 {
-  Serial.println("Add Target Mass");
-  printCoundown(5);
-  Serial.println("Reading Average");
-  target_mass = calculate_mass(getReading(10));
-  blink(2);
-  Serial.println();
+  do {
+    current_weight = scale.get_units(10);
+    blink(1);
+  } while (abs(current_weight) < 5);
 
-  Serial.print("Calibration Complete. Target weight: ");
-  Serial.println(target_mass);
-  Serial.println();
+  delay(500);
+  
+  target_weight = scale.get_units(10);
 }
 
-float getReading(int read_delay)
+int getSensorDistance()
 {
-  long reading = 0;
-  for (int j = 0; j < sample_size; j++) {
-    reading += scale.read();
-    if (read_delay > 0) {
-      delay(read_delay);
-    }
+  delay(100); // Wait 50mS before next ranging
+  digitalWrite(SENSOR_TRIG_PIN, LOW); // Set the trigger pin to low for 2uS
+  delayMicroseconds(2);
+  digitalWrite(SENSOR_TRIG_PIN, HIGH); // Send a 10uS high to trigger ranging
+  delayMicroseconds(10);
+  digitalWrite(SENSOR_TRIG_PIN, LOW); // Send pin low again
+  int distance = pulseIn(SENSOR_ECHO_PIN, HIGH); // Read in times pulse
+  distance /= 58;
+
+  return distance;
+}
+
+bool bottlePresent()
+{
+  int distance = getSensorDistance();
+  
+  if (distance > 0 && distance < 10 ) {
+    return true;
   }
   
-  return reading / long(sample_size);
-}
-
-float calculate_mass(long reading)
-{
-  // calculating mass based on calibration and linear fit
-  float ratio_1 = (float) (reading - x0);
-  float ratio_2 = (float) (x1 - x0);
-  float ratio = ratio_1/ratio_2;
-  float mass = y1 * ratio;
-
-  return mass;
+  return false;
 }
 
 int rpm_analog_val(int rpm)
 {
   return rpm * 0.425;
-}
-
-void checkPause()
-{
-  return;
-  if (digitalRead(PAUSE_SWITCH_PIN) == HIGH) {
-    Serial.println("Paused");
-    while(true) {
-      if (digitalRead(PAUSE_SWITCH_PIN) == LOW) {
-        Serial.println("Unpaused");
-        break;
-      }
-    }
-  }
-}
-
-void printCoundown(int seconds)
-{
-  for (int i = seconds; i > 0; i--) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(50);
-    if (i > 1) {
-      digitalWrite(LED_BUILTIN, LOW);
-    }
-    Serial.print(i);
-    Serial.print("..");
-    delay(950);
-  }
-  digitalWrite(LED_BUILTIN, LOW);
-  
-  Serial.println();
-  Serial.println();
 }
 
 void blink(int blinks)
